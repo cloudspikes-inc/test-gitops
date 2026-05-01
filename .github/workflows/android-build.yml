@@ -1,0 +1,112 @@
+name: Android APK Build
+
+on:
+  push:
+    branches:
+      - claude/mobile-app-crud-wfN3t
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-35 build-tools;35.0.0 platform-tools'
+
+      - name: Install npm dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund --legacy-peer-deps
+          else
+            npm install --no-audit --no-fund --legacy-peer-deps
+          fi
+
+      - name: Generate debug keystore
+        working-directory: android/app
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Build Release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        env:
+          GRADLE_OPTS: -Xmx4g -Dorg.gradle.jvmargs=-Xmx4g
+
+      - name: Locate APK
+        id: locate
+        run: |
+          APK=$(find android/app/build/outputs/apk/release -name "*.apk" | head -1)
+          echo "Found APK: $APK"
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          cp "$APK" "Notes-${GITHUB_SHA::7}.apk"
+          echo "release_name=Notes-${GITHUB_SHA::7}.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: notes-android-apk
+          path: ${{ steps.locate.outputs.release_name }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Notes Android Build ${{ github.run_number }}
+          body: |
+            Apple-style Notes CRUD app — Android APK build.
+
+            Commit: ${{ github.sha }}
+            Branch: ${{ github.ref_name }}
+
+            ## Install
+            1. Download `${{ steps.locate.outputs.release_name }}` below.
+            2. On your Android device, enable "Install unknown apps" for your browser/file manager.
+            3. Open the APK to install.
+
+            iOS: this repo is also iOS-ready. To run on iOS, clone the repo and use `cd ios && pod install && npx react-native run-ios` on a Mac.
+          files: ${{ steps.locate.outputs.release_name }}
+          prerelease: false
+          make_latest: true
